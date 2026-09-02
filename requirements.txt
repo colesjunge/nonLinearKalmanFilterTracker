@@ -1,0 +1,17 @@
+# Project 1, frozen and tagged — provides MultiTargetTracker, Track, association,
+# eval/metrics, eval/viz, and the MotionModel/MeasurementModel/BayesFilter/Sensor ABCs.
+# Do not point this at a local path or an unpinned branch — the comparison numbers in
+# this repo are only meaningful against a frozen baseline.
+target-tracking @ git+https://github.com/colesjunge/multiTargetKalmanFilterTracker.git@v1.0
+
+numpy>=1.26
+scipy>=1.11
+matplotlib>=3.8
+pyyaml>=6.0
+torch>=2.0
+
+# Stage 9 (B3 clutter classifier) — pick one when you get there
+scikit-learn>=1.4
+# xgboost>=2.0
+
+pytest>=8.0

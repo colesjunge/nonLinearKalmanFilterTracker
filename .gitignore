@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Project-specific
+figures/
+data/
+*.pt
+*.ckpt
+.claude/
+CLAUDE.md
+defense_tracking_projects.md
+
+# README is a mess of notes/graphs and will be added once finalized
+README.md
+
+# Experiment tracking (if ever used)
+runs/
+wandb/
+.hydra/
+outputs/
+
+# OS
+.DS_Store
