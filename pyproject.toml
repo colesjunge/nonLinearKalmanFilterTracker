@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nonlinear-fusion-tracking"
+version = "0.1.0"
+description = "Nonlinear sensor fusion and learned signal processing, built on target-tracking@v1.0."
+license = "MIT"
+requires-python = ">=3.11"
+
+# Runtime and dev dependencies (including target-tracking@v1.0) are pinned in
+# requirements.txt, the single source of truth for this project's install.
+# This file exists so `pip install -e .` makes `fusion` importable from src/.
+
+[tool.setuptools.packages.find]
+where = ["src"]
