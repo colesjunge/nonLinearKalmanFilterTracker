@@ -10,7 +10,7 @@ from fusion.fuse.sequential import fuse_sequential
 from fusion.eval.viz import plot_covariance_ellipse
 import matplotlib.pyplot as plt
 
-# This script is to UKF, EKF, and the fused filter
+# This script is to UKF, EKF, and the fused filter for both
 
 rng = np.random.default_rng(42)  # For reproducibility
 
