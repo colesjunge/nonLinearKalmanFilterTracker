@@ -8,7 +8,7 @@ def covariance_intersection(x1: np.ndarray,
                             P2: np.ndarray, 
                             omega: float | None=None) -> tuple[np.ndarray, np.ndarray]:
     """
-    Fuse measurements through covariance intersection
+    Fuse estimates through covariance intersection
     This does not assume measurements are independent and is thus never overconfident
     However, when correlation is low, it can be more conservative than the naive approach
     If omega is not provided, it is chosen to minimize the determinant of the fused covariance
