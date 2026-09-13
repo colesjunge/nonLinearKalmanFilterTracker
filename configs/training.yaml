@@ -1,0 +1,31 @@
+# Current Config for B1 learned denoiser (RadarRangeBearing)
+
+seed: 42
+
+scenario:
+  dt: 0.1
+  n_steps: 100  # steps per trajectory
+  n_trajectories: 10000 # 100 to start for debugging, but increase to 10000 once up and running
+  sigma_range: 100.0  # matches prior scripts
+  sigma_bearing: 0.01
+  epsilon: 0.1  # contaminated Gaussian mixture weight
+  kappa: 10.0 # contaminated Gaussian variance scale
+
+dataset:
+  window: 10  # W, number of past and current raw measurements per input
+  val_fraction: 0.2  # held out by trajectory, not timestep
+
+model:
+  hidden_channels: 32
+  n_layers: 4 # dilated conv layers (receptive field must cover window)
+  kernel_size: 3
+  dim_z: 2 # For RadarRangeBearing (EOIR only has 1; just bearing)
+  dim_pos: 2
+training:
+  batch_size: 64
+  epochs: 40
+  learning_rate: 1.0e-3
+  grad_clip_norm: 1.0
+
+comparison:
+  mc_trials: 30
