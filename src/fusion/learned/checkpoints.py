@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from fusion.learned.denoiser import Denoiser
+from typing import Callable
 
 
 def save_checkpoint(path, model: nn.Module, normalization_stats: dict, config: dict) -> None:
@@ -14,10 +15,11 @@ def save_checkpoint(path, model: nn.Module, normalization_stats: dict, config: d
     checkpoint_dict = {'model_state_dict': model.state_dict(), 'normalization_stats': normalization_stats, 'config': config}
     torch.save(checkpoint_dict, path)
 
-def load_checkpoint(path) -> tuple[nn.Module, dict, dict]:
+def load_checkpoint(path, build_model_fn: Callable[[dict], nn.Module]) -> tuple[nn.Module, dict, dict]:
     """
     Load checkpoint including model with weights, normalization stats, and config variables
     In: path, path to checkpoint_dict
+        build_model_fn (callable), takes config and supplys relevant model
     Out: model (nn.Module), the network being trained;
         normalization_stats (dict) {mean, std}
         config (dict), configuration variables
@@ -26,11 +28,7 @@ def load_checkpoint(path) -> tuple[nn.Module, dict, dict]:
     checkpoint = torch.load(path, weights_only=False) # Loading more than just the weights (config and norm stats)
     config = checkpoint['config']
 
-    model = Denoiser(dim_z=config['model']['dim_z'],
-                        dim_pos=config['model']['dim_pos'], 
-                        hidden_channels=config['model']['hidden_channels'], 
-                        n_layers=config['model']['n_layers'], 
-                        kernel_size=config['model']['kernel_size'])
+    model = build_model_fn(config)
 
     model.load_state_dict(checkpoint['model_state_dict'])
 

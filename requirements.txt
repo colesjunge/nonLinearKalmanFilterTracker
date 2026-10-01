@@ -9,6 +9,7 @@ scipy>=1.11
 matplotlib>=3.8
 pyyaml>=6.0
 torch>=2.0
+tqdm>=4.66
 
 # Stage 9 (B3 clutter classifier) — pick one when you get there
 scikit-learn>=1.4

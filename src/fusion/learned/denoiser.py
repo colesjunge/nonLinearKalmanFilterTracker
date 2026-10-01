@@ -69,4 +69,18 @@ class Denoiser(nn.Module):
         x = self.output_layer(x)
 
         return x
-    
+
+
+def build_denoiser(config: dict) -> nn.Module:
+    """ Builder function for load_checkpoint for denoiser model
+    In: config, configuration variables
+    Out: denoiser
+    """
+
+    denoiser = Denoiser(dim_z=config['model']['dim_z'],
+                            dim_pos=config['model']['dim_pos'], 
+                            hidden_channels=config['model']['hidden_channels'], 
+                            n_layers=config['model']['n_layers'], 
+                            kernel_size=config['model']['kernel_size'])
+
+    return denoiser
