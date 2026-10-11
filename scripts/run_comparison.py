@@ -21,7 +21,7 @@ from fusion.sim.noise import contaminated_gaussian_noise
 from fusion.learned.checkpoints import load_checkpoint
 from fusion.learned.datasets import load_denoiser_dataset
 from fusion.learned.denoiser import build_denoiser
-from fusion.learned.covariance import build_adaptive_denoiser, cov_from_chol
+from fusion.learned.covariance import build_adaptive_denoiser, build_rollout_covariance_model, cov_from_chol
 
 # This script will run a comparison for six different conditions (same measurements except for noise)
 # 1) EKF with contaminated noise; This is the floor for performance and should be the weakest
@@ -31,7 +31,6 @@ from fusion.learned.covariance import build_adaptive_denoiser, cov_from_chol
 # 5) Denoiser fed to KF with R predicted per-window by the adaptive (learned covariance) model
 # 6) EKF with clean noise; This is the ceiling for performance and theoretically the best outcome
  
-
 # UKF is not used in this script as it produce almost identical results as EKF (as seen in stage 7; demo_contaminated_noise.py)
 # EOIR is not included deliberately to reduce the scope of this comparison
 # Given that Denoiser produces Cartesian positions, it currently cannot be fed into EKF (which has radar/bearing as input), so KF is used
@@ -43,6 +42,7 @@ conditions = {
     "kf": ("Denoiser to KF", True),
     "kf_alpha": ("Denoiser to KF & Alpha",True),
     "kf_adaptive": ("Denoiser to KF & Adaptive R", True),
+    "kf_rollout": ("Denoiser to KF & Rollout R", True),
     "ekf_clean":("EKF (Clean)",True),
 }
 
@@ -58,6 +58,9 @@ def make_results() -> dict[str, dict[str, list]]:
 # Load denoiser and adaptive denoiser models, norm stats, and config data from prior created dataset (denoiser_checkpoint)
 model, normalization_stats, checkpoint_config = load_checkpoint(path="data/processed/denoiser_checkpoint.pt", build_model_fn=build_denoiser)
 model.eval()
+
+rollout_model, _, _ = load_checkpoint(path="data/processed/rollout_covariance_checkpoint.pt", build_model_fn=build_rollout_covariance_model)
+rollout_model.eval()
 
 adaptive_model, _, _ = load_checkpoint(path="data/processed/adaptive_r_checkpoint.pt", build_model_fn=build_adaptive_denoiser)
 adaptive_model.eval()
@@ -119,6 +122,7 @@ def run_trial(seed) -> tuple[dict[str, dict[str, list]], list[np.ndarray]]:
 
     # Adaptive Position Model is moved to inside to ensure it is fresh at each trial
     adaptive_position_model = AdaptivePosition2D(R_init=np.eye(dim_pos)) # Initial R gets overwritten
+    rollout_position_model = AdaptivePosition2D(R_init=np.eye(dim_pos)) # Initial R gets overwritten
 
     # Fresh filters for each trial (R is carried, but is overwritten)
     filters = {
@@ -126,6 +130,7 @@ def run_trial(seed) -> tuple[dict[str, dict[str, list]], list[np.ndarray]]:
         "kf":          KalmanFilter(motion=motion_model, measurement=linear_model, x0=x0_filter, P0=P0),
         "kf_alpha":    KalmanFilter(motion=motion_model, measurement=linear_model_alpha, x0=x0_filter, P0=P0),
         "kf_adaptive": KalmanFilter(motion=motion_model, measurement=adaptive_position_model, x0=x0_filter, P0=P0),
+        "kf_rollout":  KalmanFilter(motion=motion_model, measurement=rollout_position_model, x0=x0_filter, P0=P0),
         "ekf_clean":   ExtendedKalmanFilter(motion_model, radar_model, x0=x0_filter, P0=P0),
     }
 
@@ -137,6 +142,7 @@ def run_trial(seed) -> tuple[dict[str, dict[str, list]], list[np.ndarray]]:
     # Learned-model outputs (None until the window is full)
     denoiser_z = None
     adaptive_z = None
+    rollout_z = None
 
   
     for i in range(1, n_steps):
@@ -163,12 +169,18 @@ def run_trial(seed) -> tuple[dict[str, dict[str, list]], list[np.ndarray]]:
                 adaptive_z = adaptive_pos.squeeze(0).numpy()
                 adaptive_position_model.set_R(cov_from_chol(L).squeeze(0).numpy())
 
+                # Rollout model position and Cholesky to R
+                rollout_pos, L_rollout = rollout_model.adaptive_denoiser(window_tensor)
+                rollout_z = rollout_pos.squeeze(0).numpy()
+                rollout_position_model.set_R(cov_from_chol(L_rollout).squeeze(0).numpy())
+
         # Measurements fed to each filter this step (prior to update)
         measurements = {
             "ekf_cont": z_contaminated,
             "kf": denoiser_z,
             "kf_alpha": denoiser_z,
             "kf_adaptive": adaptive_z,
+            "kf_rollout": rollout_z,
             "ekf_clean": z_clean,
         }
 

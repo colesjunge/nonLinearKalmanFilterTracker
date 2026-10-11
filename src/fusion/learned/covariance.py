@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn
+import numpy as np
+from tracking.models.measurement import LinearPosition2D
+from tracking.models.motion import ConstantVelocity2D
 from fusion.learned.denoiser import Denoiser
+from fusion.learned.diff_kf import DifferentiableKF
 
 def gaussian_nll(pred: torch.Tensor, target: torch.Tensor, L: torch.Tensor) -> torch.Tensor:
     """ Calculates the mean negative log-likelihood over the batch
@@ -138,4 +142,85 @@ def build_adaptive_denoiser(config: dict) -> nn.Module:
 
     return adaptive_denoiser
 
+class RolloutCovarianceModel(nn.Module):
+
+    def __init__(self, 
+                 denoiser: Denoiser, 
+                 sigma_scale: float, 
+                 min_diag: float, 
+                 F: torch.Tensor, 
+                 H: torch.Tensor, 
+                 Q: torch.Tensor, 
+                 dt: int):
+        
+        super().__init__()
+
+        self.adaptive_denoiser = AdaptiveDenoiser(denoiser, sigma_scale, min_diag)
+        self.diff_kf = DifferentiableKF(F, H, Q)
+
+        self.dt = dt
+
+    def forward(self, z_window_seq: torch.Tensor, x0: torch.Tensor, P0: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """ Forward pass through the adaptive denoiser and differentiable Kalman filter
+        In:  z_window_seq (B, K, W, dim_z), sequence of raw measurement windows
+             x0 (B, dim_x), initial state estimate
+             P0 (B, dim_x, dim_x), initial error covariance
+
+        Out: x_filtered (B, K, dim_x), sequence of estimated states;
+             P_filtered (B, K, dim_x, dim_x), sequence of estimated error covariances
+        """
+        B, K, _, _ = z_window_seq.shape
+
+        pos_seq = []
+        L_seq = []
+
+        for t in range(K):
+            pos_t, L_t = self.adaptive_denoiser(z_window_seq[:, t])
+            pos_seq.append(pos_t)
+            L_seq.append(L_t)
+
+        pos_seq = torch.stack(pos_seq, dim=1) # (B, K, dim_pos)
+        L_seq = torch.stack(L_seq, dim=1) # (B, K, dim_pos, dim_pos)
+
+        R_seq = cov_from_chol(L_seq) # (B, K, dim_pos, dim_pos)
+
+        x0_expanded = x0.expand(B, -1) # (B, dim_x)
+        P0_expanded = P0.expand(B, -1, -1) # (B, dim_x, dim_x)
+
+        x_filtered, P_filtered = self.diff_kf(pos_seq, R_seq, self.dt, x0_expanded, P0_expanded)
+
+        return x_filtered, P_filtered
+
+def build_rollout_covariance_model(config: dict) -> nn.Module:
+    """ Builder function for load_checkpoint for rollout covariance model
+    In: config, configuration variables
+    Out: rollout covariance model
+    """
+
+    denoiser = Denoiser(dim_z=config['model']['dim_z'],
+                            dim_pos=config['model']['dim_pos'], 
+                            hidden_channels=config['model']['hidden_channels'], 
+                            n_layers=config['model']['n_layers'], 
+                            kernel_size=config['model']['kernel_size'])
+
+    motion_model = ConstantVelocity2D(sigma_a=0.0)
+    measurement_model = LinearPosition2D(sigma_pos=1.0) # Sigma_pos is arbitrary here
+
+    dummy_state = np.zeros(4, dtype=np.float32)
+
+    dt = config['scenario']['dt']
+
+    F = torch.as_tensor(motion_model.F(dummy_state, dt), dtype=torch.float32)
+    H = torch.as_tensor(measurement_model.H(dummy_state), dtype=torch.float32)
+    Q = torch.as_tensor(motion_model.Q(dt), dtype=torch.float32)
+
+    rollout_cov_model = RolloutCovarianceModel(denoiser=denoiser, 
+                                        sigma_scale=config['covariance']['sigma_scale'], 
+                                        min_diag=config['covariance']['min_diag'],
+                                        F=F,
+                                        H=H, 
+                                        Q=Q, 
+                                        dt=dt)
+
+    return rollout_cov_model
 
