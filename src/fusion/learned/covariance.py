@@ -187,7 +187,7 @@ class RolloutCovarianceModel(nn.Module):
         x0_expanded = x0.expand(B, -1) # (B, dim_x)
         P0_expanded = P0.expand(B, -1, -1) # (B, dim_x, dim_x)
 
-        x_filtered, P_filtered = self.diff_kf(pos_seq, R_seq, self.dt, x0_expanded, P0_expanded)
+        x_filtered, P_filtered, _ = self.diff_kf(pos_seq, R_seq, self.dt, x0_expanded, P0_expanded)
 
         return x_filtered, P_filtered
 

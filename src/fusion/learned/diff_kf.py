@@ -18,8 +18,10 @@ class DifferentiableKF(nn.Module):
         self.register_buffer('Q', Q) # Process noise covariance
 
 
-    def forward(self, z_seq: torch.Tensor, R_seq: torch.Tensor, dt: float, x0: torch.Tensor, P0: torch.Tensor, mask=None, eps: float = 1e-6) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, z_seq: torch.Tensor, R_seq: torch.Tensor, dt: float, x0: torch.Tensor, P0: torch.Tensor, mask=None, eps: float = 1e-6, dynamics_fn=None, h0=None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """ Forward pass through the differentiable Kalman filter
+        If not None, dynamics_fn(x_t, dt, h_t) is called once per step to get (delta, L, h_next))
+        These are used to update predictions using ResidualDynamicsNet
         In: z_seq (B, K, dim_z), sequence of raw measurements;
             R_seq (B, K, dim_z, dim_z), sequence of measurement noise covariances;
             dt (float), time step;
@@ -27,8 +29,11 @@ class DifferentiableKF(nn.Module):
             P0 (B, dim_x, dim_x), initial error covariance;
             mask (B, K) boolean (optional) mask for valid measurements (IMPLEMENT LATER)
             eps (float), small value to add to diagonal for numerical stability
+            dynamics_fn (Callable[[Tensor(B,dim_x), float, Tensor(B,hidden_dim)|None], tuple[Tensor(B,dim_x), Tensor(B,dim_x,dim_x), Tensor(B,hidden_dim)]] | None, Same contract as ResidualDynamicsNet.forward();
+            h0 (B, hidden_dim) | None, initial hidden state (only used when dynamics_fn not None)
         Out: x_seq (B, K, dim_x), sequence of estimated states;
              P_seq (B, K, dim_x, dim_x), sequence of estimated error covariances
+             h_seq (B, K, hidden_dim), sequence of hidden states (all zeros when dynamix_fn is None)
 
         """
 
@@ -39,10 +44,12 @@ class DifferentiableKF(nn.Module):
         # Store outputs at each timestep
         x_list = []
         P_list = []
+        h_list = []
 
-        # Initialize the state and covariance
+        # Initialize the state, covariance, and hidden state
         x_t = x0
         P_t = P0
+        h_t = h0
 
         I_x = torch.eye(dim_x, dtype=P0.dtype, device=P0.device)
         I_z = torch.eye(dim_z, dtype=P0.dtype, device=P0.device)
@@ -50,8 +57,29 @@ class DifferentiableKF(nn.Module):
         for t in range(K):
 
             # Predict step
-            x_pred = x_t @ self.F.T
-            P_pred = self.F @ P_t @ self.F.T + self.Q
+            if dynamics_fn is not None:
+
+                # Get learned residual and process noise factors
+                delta, L, h_next = dynamics_fn(x_t, dt, h_t)
+
+                # Construct learned process noise covariance
+                Q_t = L @ L.transpose(-2, -1)
+
+                # Incorporate learned residual into state prediction
+                x_pred = x_t @ self.F.T + delta
+
+                # Incorporate learned process noise into covariance prediction
+                P_pred = self.F @ P_t @ self.F.T + Q_t
+
+                # Carry hidden state forward
+                h_t = h_next
+
+                h_list.append(h_t)
+
+            else:
+                # Original fixed dynamics
+                x_pred = x_t @ self.F.T
+                P_pred = self.F @ P_t @ self.F.T + self.Q
 
             # Measurement and measurement covariance at time t
             z_t = z_seq[:, t, :]
@@ -87,4 +115,10 @@ class DifferentiableKF(nn.Module):
         x_seq = torch.stack(x_list, dim=1)
         P_seq = torch.stack(P_list, dim=1)
 
-        return x_seq, P_seq
+        # Stack hidden states if applicable
+        if dynamics_fn is not None:
+            h_seq = torch.stack(h_list, dim=1)
+        else:
+            h_seq = torch.zeros(B, K, 0, dtype=x0.dtype, device=x0.device)
+
+        return x_seq, P_seq, h_seq

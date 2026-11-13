@@ -21,6 +21,12 @@ def run_model(model: nn.Module, batch: tuple) -> tuple[torch.Tensor | tuple, tor
         windows, targets, x0, P0 = batch
         output = model(windows, x0, P0)
         return output, targets
+    
+    elif len(batch) == 5:
+        z_window_seq, target_seq, x0, P0, h0 = batch
+        output = model(z_window_seq, x0, P0, h0)
+        return output, target_seq
+
 
 def train_epoch(model: nn.Module, loader: torch.utils.data.DataLoader, optimizer: torch.optim.Optimizer, grad_clip_norm: float, loss_fn: Callable[[torch.Tensor | tuple, torch.Tensor], torch.Tensor]) -> float:
     """

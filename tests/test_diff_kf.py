@@ -75,7 +75,7 @@ def test_diff_kf_matches_numpy_kf():
     x0_t = torch.tensor(x0_filter, dtype=torch.float64).unsqueeze(0)
     P0_t = torch.tensor(P0, dtype=torch.float64).unsqueeze(0)
 
-    x_seq, P_seq = diff_kf(z_seq, R_seq, dt, x0_t, P0_t)
+    x_seq, P_seq, _ = diff_kf(z_seq, R_seq, dt, x0_t, P0_t)
 
     # Convert NumPy reference to torch for comparison
     x_ref_t = torch.tensor(x_ref, dtype=torch.float64).unsqueeze(0)
@@ -140,7 +140,7 @@ def test_diff_kf_P_symmetric():
     x0_t = torch.tensor(x0_filter, dtype=torch.float64).unsqueeze(0)
     P0_t = torch.tensor(P0, dtype=torch.float64).unsqueeze(0)
 
-    x_seq, P_seq = diff_kf(z_seq, R_seq, dt, x0_t, P0_t)
+    x_seq, P_seq, _ = diff_kf(z_seq, R_seq, dt, x0_t, P0_t)
 
     # Check symmetry of P at each timestep
     for t in range(K):
@@ -219,7 +219,7 @@ def test_diff_kf_gradients_flow():
     x0_t = torch.tensor(x0_filter, dtype=torch.float64).unsqueeze(0)
     P0_t = torch.tensor(P0, dtype=torch.float64).unsqueeze(0)
 
-    x_seq, P_seq = diff_kf(z_seq, R_seq, dt, x0_t, P0_t)
+    x_seq, P_seq, _ = diff_kf(z_seq, R_seq, dt, x0_t, P0_t)
 
     loss = x_seq.sum() + P_seq.sum()
     loss.backward()
@@ -290,12 +290,12 @@ def test_diff_kf_batch_independence():
     x0_t = torch.tensor(x0_filter, dtype=torch.float64).unsqueeze(0)
     P0_t = torch.tensor(P0, dtype=torch.float64).unsqueeze(0)
 
-    x_seq_A, P_seq_A = diff_kf(z_seq_A, R_seq, dt, x0_t, P0_t)
-    x_seq_B, P_seq_B = diff_kf(z_seq_B, R_seq, dt, x0_t, P0_t)
+    x_seq_A, P_seq_A, _ = diff_kf(z_seq_A, R_seq, dt, x0_t, P0_t)
+    x_seq_B, P_seq_B, _ = diff_kf(z_seq_B, R_seq, dt, x0_t, P0_t)
 
     # Combine the two trajectories into a batch
     z_seq_batch = torch.cat((z_seq_A, z_seq_B), dim=0)
-    x_seq_batch, P_seq_batch = diff_kf(z_seq_batch, R_seq.repeat(2, 1, 1, 1), dt, x0_t.repeat(2, 1), P0_t.repeat(2, 1, 1))
+    x_seq_batch, P_seq_batch, _ = diff_kf(z_seq_batch, R_seq.repeat(2, 1, 1, 1), dt, x0_t.repeat(2, 1), P0_t.repeat(2, 1, 1))
 
     # Check that the outputs for each trajectory in the batch match the independent runs
     assert torch.allclose(x_seq_batch[0], x_seq_A[0], atol=1e-6), "Trajectory A in batch does not match independent run"

@@ -1,3 +1,6 @@
+import numpy as np
+from tracking.filters.utils import wrap_angle
+
 def false_track_rate(assignment_log: list[dict[int, int]], confirmed_track_ids_per_frame: list[set[int]]) -> float:
     """Fraction of confirmed tracks that were never matched to a real target.
     In:  assignment_log, list of per-frame {truth_id: track_id};
@@ -25,3 +28,24 @@ def false_track_rate(assignment_log: list[dict[int, int]], confirmed_track_ids_p
         return float('nan')
 
     return len(false_track_ids) / len(confirmed_track_ids)
+
+def classify_maneuver_segments(trajectory: np.ndarray, dt: float, omega_threshold: float = .02) -> tuple[np.ndarray, np.ndarray]:
+    """ Classify when segmeents are straight legs or turning legs
+    In: trajectory (T, 4), ground-truth [px, py, vx, vy] per step;
+        dt, seconds per step;
+        omega_threshold, rad/s magnitude above which a step counts as "turning"
+        This will be .02 as this cleanly seperates turning versus straight
+    Out: is_turning (T,), boolean mask;
+        angular_rates (T,), angular rates for each step
+    """
+
+    heading = np.arctan2(trajectory[:, 3], trajectory[:, 2])
+
+    angular_rates = wrap_angle(heading[1:] - heading[:-1]) / dt
+
+    angular_rates = np.concatenate([angular_rates[:1], angular_rates])
+
+    is_turning = np.abs(angular_rates) > omega_threshold
+
+    return is_turning, angular_rates
+

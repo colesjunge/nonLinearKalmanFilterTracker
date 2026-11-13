@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from fusion.learned.covariance import RolloutCovarianceModel
+from fusion.learned.residual_dynamics_kf import ResidualDynamicsKF
 
 def compute_normalization_stats(windows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """ Computes mean/std across all training windows per channel to standardize inputs
@@ -220,6 +221,141 @@ def compute_warm_states(model: RolloutCovarianceModel, windows: np.ndarray, mean
 
     return all_x, all_P
 
+class ManeuverRolloutDataset(torch.utils.data.Dataset):
+    def __init__(self, trajectories: np.ndarray, K: int, sigma_pos: float, rng: np.random.Generator) -> None:
+        """
+        Initialize ManeuverRolloutDataset
+        For each stored ground-truth trajectory (which is the output of waypoint_trajectory), creates noisy measurements
+        This is the direct maneuvering-data analogue of RolloutWindowDataset
+        in: trajectories (n_traj, T, dim_x);
+            K, rollout length;
+            sigma_pos, std for guassian noise;
+            rng, for seed reproducibility
+        """
+
+        self.trajectories = trajectories
+        self.K = K
+        self.sigma_pos = sigma_pos
+        self.rng = rng
+
+        # Extract dimensions
+        n_traj, T, dim_x = trajectories.shape
+        dim_z = 2  # Position measurements (px, py)
+
+        # Extract position columns from ground-truth trajectories
+        positions = trajectories[:,:,:dim_z]
+
+        # Generate measurement noise ONCE for all trajectories
+        noise = rng.normal(0, sigma_pos, size=(n_traj, T, dim_z))
+
+        # Store noisy measurements and ground-truth targets
+        self.z = positions + noise # (n_traj, T, dim_z)
+        self.targets = trajectories # (n_traj, T, dim_x)
+
+        # Cache placeholders
+        self.cache_x = None
+        self.cache_P = None
+        self.cache_h = None
+
+    def __len__(self) -> int:
+        """
+        Return the amount of (traj_idx, start_idx) pairs for rollouts of length K
+        """
+        n_traj, T, dim_z = self.z.shape
+        return n_traj * (T - self.K + 1)
+
+    def __getitem__(self, idx) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Slices each stored trajectory it into overlapping K-step windows
+        Return a samples z_window_seq and target_seq
+        In: idx (int), index for given window/target
+        Out: z_window_seq (K, dim_z), 
+            target_seq (K, dim_x), 
+            x0 (dim_x,), 
+            P0 (dim_x, dim_x)
+            h0 (dim_x, dim_x)
+        """
+        
+        n_traj, T, dim_z = self.z.shape
+
+        starts_per_traj = T - self.K + 1
+
+        # Integer division finds how many full trajectories have been passed
+        traj_idx = idx // starts_per_traj
+        # Modulo finds the starting index within said trajectory
+        start_idx = idx % starts_per_traj
+
+        # Slice out the K-length sequence of windows and targets
+        z_window_seq = self.z[traj_idx, start_idx:start_idx+self.K]
+        target_seq = self.targets[traj_idx, start_idx:start_idx+self.K]
+
+        z_window_seq = torch.from_numpy(z_window_seq).float()
+        target_seq = torch.from_numpy(target_seq).float()
+
+        x0 = self.cache_x[traj_idx, start_idx]
+        P0 = self.cache_P[traj_idx, start_idx]
+        h0 = self.cache_h[traj_idx, start_idx]
+
+        return (z_window_seq, target_seq, x0, P0, h0)
+
+def load_maneuver_dataset(path, K: int, val_fraction: float, seed: int, sigma_pos: float) -> tuple[ManeuverRolloutDataset, ManeuverRolloutDataset]:
+    """
+    Load .npz dataset and split trajectories into train/val splits
+    Flatten each split down to samples
+    In: path, path to .npz dataset;
+        K, rollout length
+        val_fraction, fraction that will be used for validation;
+        seed, for rng; 
+        sigma_pos, measurement std
+    Out: train_dataset, val_dataset
+    """
+
+    # Load data and get trajectories
+    data = np.load(path)
+    trajectories = data['trajectories']
+
+    # Permute and generate train/val indicies
+    n_traj = trajectories.shape[0]
+    rng_train = np.random.default_rng(seed)
+    rng_val = np.random.default_rng(seed+1) # To ensure independence
+    indices = rng_train.permutation(n_traj)
+    n_val = int(n_traj * val_fraction)
+
+    train_indices = indices[n_val:]
+    val_indices = indices[:n_val]
+
+    train_trajectories = trajectories[train_indices]
+    val_trajectories = trajectories[val_indices]
+
+    train_dataset = ManeuverRolloutDataset(train_trajectories, K, sigma_pos, rng_train)
+    val_dataset = ManeuverRolloutDataset(val_trajectories, K, sigma_pos, rng_val)
+
+    return (train_dataset, val_dataset)
+
+
+def compute_maneuver_warm_states(model: ResidualDynamicsKF, z: np.ndarray, x0_init: torch.Tensor, P0_init: torch.Tensor, h0_init: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute warm states for the residual dynamics kf
+    In: model, ResidualDynamicsKF;
+        z (n_traj, T, dim_z), raw noisy measurement sequences;
+        x0_init (n_traj, dim_x),, initial state estimates;
+        P0_init (n_traj, dim_x, dim_x), initial error covariances;
+        h0_init (n_traj, hidden_dim), initial hidden states;
+    Out: all_x (n_traj, T+1, dim_x), state estimates, including initial states;
+        all_P (n_traj, T+1, dim_x, dim_x), error covariances, including initial covariances;
+        all_h (n_traj, T+1, hidden_dim), hidden states, including initial hidden states
+    """
+
+    z_seq = torch.as_tensor(z, dtype=x0_init.dtype, device=x0_init.device)
+
+    # Compute warm states for each trajectory
+    with torch.no_grad():
+        x_filtered, P_filtered, h_filtered = model.forward(z_seq, x0_init, P0_init, h0_init)
+        all_x = torch.cat([x0_init.unsqueeze(1), x_filtered], dim=1)
+        all_P = torch.cat([P0_init.unsqueeze(1), P_filtered], dim=1)
+        all_h = torch.cat([h0_init.unsqueeze(1), h_filtered], dim=1)
+
+    return all_x, all_P, all_h
 
 
 
