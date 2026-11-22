@@ -3,6 +3,7 @@ import torch
 
 from fusion.learned.covariance import RolloutCovarianceModel
 from fusion.learned.residual_dynamics_kf import ResidualDynamicsKF
+from fusion.learned.full_pipeline import FullPipelineModel
 
 def compute_normalization_stats(windows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """ Computes mean/std across all training windows per channel to standardize inputs
@@ -273,7 +274,7 @@ class ManeuverRolloutDataset(torch.utils.data.Dataset):
             target_seq (K, dim_x), 
             x0 (dim_x,), 
             P0 (dim_x, dim_x)
-            h0 (dim_x, dim_x)
+            h0 (hidden_dim,)
         """
         
         n_traj, T, dim_z = self.z.shape
@@ -357,7 +358,159 @@ def compute_maneuver_warm_states(model: ResidualDynamicsKF, z: np.ndarray, x0_in
 
     return all_x, all_P, all_h
 
+def extract_windows(z_sequence: np.ndarray, positions: np.ndarray, window: int) -> tuple[np.ndarray, np.ndarray]:
+    """ Extracts windows for every valid end index
+    In:  z_sequence (n_measurements, dim_z); positions (n_measurements, dim_pos); window, length of each window
+    Out: windows (n_windows, window, dim_z); targets (n_windows, dim_pos)
+    """
+
+    n_measurements = len(z_sequence)
+
+    windows = []
+    targets = []
+
+    for t in range(window - 1, n_measurements):
+        windows.append(z_sequence[t - window + 1 : t + 1])
+        targets.append(positions[t])
+
+    return np.array(windows), np.array(targets)
 
 
+class FullPipelineRolloutDataset(torch.utils.data.Dataset):
+    def __init__(self, windows: np.ndarray, trajectories: np.ndarray, mean: np.ndarray, std: np.ndarray, window: int, K: int) -> None:
+        """
+        Initialize FullPipelineRolloutDataset
+        Serves pre-generated, already-windowed contaminated radar measurements(from generate_full_pipeline_dataset.py)
+        alongside their aligned full-state ground-truth targets, for rollout-style TBPTT training of FullPipelineModel
+        in: windows (n_traj, n_windows_per_traj, window_len, dim_z);
+            trajectories (n_traj, T, dim_x);
+            mean (dim_z,), std (dim_z,), normalization stats for windows;
+            window (int), window length used at generation time (needed to align window i with trajectories[window + i]);
+            K (int), rollout length
+        """
+
+        self.windows = windows
+        self.trajectories = trajectories
+        self.mean = mean
+        self.std = std
+        self.window = window
+        self.K = K
+
+        # Cache placeholders
+        self.cache_x = None
+        self.cache_P = None
+        self.cache_h = None
+
+    def __len__(self) -> int:
+        """
+        Return the amount of (traj_idx, start_idx) pairs for rollouts of length K
+        """
+        n_traj, n_windows_per_traj, window_len, dim_z = self.windows.shape
+        return n_traj * (n_windows_per_traj - self.K + 1)
+    
+    def __getitem__(self, idx) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Slices each stored trajectory it into overlapping K-step windows
+        Return a samples window_seq and target_seq
+        In: idx (int), index for given window/target
+        Out: z_window_seq (K, window_len, dim_z), 
+            target_seq (K, dim_x), 
+            x0 (dim_x,), 
+            P0 (dim_x, dim_x)
+            h0 (hidden_dim,)
+        """
+        
+        n_traj, n_windows_per_traj, window_len, dim_z = self.windows.shape
+
+        starts_per_traj = n_windows_per_traj - self.K + 1
+
+        # Integer division finds how many full trajectories have been passed
+        traj_idx = idx // starts_per_traj
+        # Modulo finds the starting index within said trajectory
+        start_idx = idx % starts_per_traj
+
+        # Slice out the K-length sequence of windows and targets
+        window_seq = self.windows[traj_idx, start_idx:start_idx+self.K]
+        target_seq = self.trajectories[traj_idx, self.window+start_idx : self.window+start_idx+self.K]
+
+        z_window_seq = (window_seq - self.mean) / self.std
+
+        z_window_seq = torch.from_numpy(z_window_seq).float()
+        target_seq = torch.from_numpy(target_seq).float()
+
+        x0 = self.cache_x[traj_idx, start_idx]
+        P0 = self.cache_P[traj_idx, start_idx]
+        h0 = self.cache_h[traj_idx, start_idx]
+
+        return (z_window_seq, target_seq, x0, P0, h0)
 
 
+def load_full_pipeline_dataset(path, K: int, val_fraction: float, seed: int, window: int, mean: np.ndarray | None = None, std: np.ndarray | None = None) -> tuple[FullPipelineRolloutDataset, FullPipelineRolloutDataset, dict]:
+    """
+    Load .npz dataset and split trajectories into train/val splits
+    Flatten each split down to samples
+    In: path, path to .npz dataset;
+        K, rollout length
+        val_fraction, fraction that will be used for validation;
+        seed, for rng; 
+        mean (dim_z,), std (dim_z,), normalization stats for windows;
+        window (int), window length used at generation time (needed to align window i with trajectories[window + i]);
+    Out: train_dataset, val_dataset, stats_dict
+    """
+
+    # Load data and get trajectories
+    data = np.load(path)
+    trajectories = data['trajectories']
+    windows = data['windows']
+   
+
+    # Permute and generate train/val indicies
+    n_traj = trajectories.shape[0]
+    rng_train = np.random.default_rng(seed)
+    rng_val = np.random.default_rng(seed+1) # To ensure independence
+    indices = rng_train.permutation(n_traj)
+    n_val = int(n_traj * val_fraction)
+
+    train_indices = indices[n_val:]
+    val_indices = indices[:n_val]
+
+    train_trajectories = trajectories[train_indices]
+    train_windows = windows[train_indices]
+    val_trajectories = trajectories[val_indices]
+    val_windows = windows[val_indices]
+
+    if mean is None:
+        mean, std = compute_normalization_stats(train_windows)
+
+    train_dataset = FullPipelineRolloutDataset(train_windows, train_trajectories, mean, std, window, K)
+    val_dataset = FullPipelineRolloutDataset(val_windows, val_trajectories, mean, std, window, K)
+
+    stats_dict = {"mean": mean, "std": std}
+
+    return (train_dataset, val_dataset, stats_dict)
+
+
+def compute_full_pipeline_warm_states(model: FullPipelineModel, windows: np.ndarray, mean: np.ndarray, std: np.ndarray, x0_init: torch.Tensor, P0_init: torch.Tensor, h0_init: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute warm states for the FullPipelineModel
+    In: model, FullPipelineModel;
+         windows (n_traj, n_windows_per_traj, window_len, dim_z);
+        mean (dim_z,), std (dim_z,), normalization stats for windows;
+        x0_init (n_traj, dim_x),, initial state estimates;
+        P0_init (n_traj, dim_x, dim_x), initial error covariances;
+        h0_init (n_traj, hidden_dim), initial hidden states;
+    Out: all_x (n_traj, T+1, dim_x), state estimates, including initial states;
+        all_P (n_traj, T+1, dim_x, dim_x), error covariances, including initial covariances;
+        all_h (n_traj, T+1, hidden_dim), hidden states, including initial hidden states
+    """
+    normalized_windows = (windows - mean) / std
+    normalized_windows_seq = torch.as_tensor(normalized_windows, dtype=x0_init.dtype, device=x0_init.device)
+
+    # Compute warm states for each trajectory
+    with torch.no_grad():
+        x_filtered, P_filtered, h_filtered = model.forward(normalized_windows_seq, x0_init, P0_init, h0_init)
+        all_x = torch.cat([x0_init.unsqueeze(1), x_filtered], dim=1)
+        all_P = torch.cat([P0_init.unsqueeze(1), P_filtered], dim=1)
+        all_h = torch.cat([h0_init.unsqueeze(1), h_filtered], dim=1)
+
+    return all_x, all_P, all_h

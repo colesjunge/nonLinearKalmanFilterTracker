@@ -8,10 +8,11 @@ from fusion.sim.sensors_nl import RadarSensor
 from fusion.filters.ekf import ExtendedKalmanFilter
 from tracking.sim.trajectories import constant_velocity_trajectory
 from fusion.models.radar import RadarRangeBearing
+from tracking.filters.base import BayesFilter
 
 N_FEATURES = 4
 
-def init_track_from_detection(det: Detection, radar_model: RadarRangeBearing, motion_model: MotionModel, track_id: int, timestamp: float) -> Track:
+def init_track_from_detection(det: Detection, radar_model: RadarRangeBearing, motion_model: MotionModel, track_id: int, timestamp: float, filter_cls: type[BayesFilter] = ExtendedKalmanFilter) -> Track:
     """ Builds a new Track from an unmatched detection
     Inverts (range, bearing) to (px, py)
     Does not assign an ID or register the track anywhere
@@ -20,7 +21,8 @@ def init_track_from_detection(det: Detection, radar_model: RadarRangeBearing, mo
          motion_model, the motion model used to build the track's EKF;
          track_id, the ID the caller has already decided for this new track;
          timestamp, absolute time the track is created;
-    Out: Track, wrapping a fresh ExtendedKalmanFilter seeded from the inverted position
+         filter_cls, filter class to construct
+    Out: Track, wrapping a fresh ExtendedKalmanFilter/UnscentedKalmanFilter seeded from the inverted position
     """
 
     # Determine px, py from range and bearing
@@ -34,9 +36,9 @@ def init_track_from_detection(det: Detection, radar_model: RadarRangeBearing, mo
             [0, 0, 34, 0], 
             [0, 0, 0, 35]]) # Initial uncertainty (random numbers I've chosen)
 
-    ekf = ExtendedKalmanFilter(motion_model, radar_model, x0, P0)
+    filt = filter_cls(motion_model, radar_model, x0, P0)
 
-    track = Track(track_id, ekf, timestamp)
+    track = Track(track_id, filt, timestamp)
 
     return track
 
@@ -89,6 +91,7 @@ def build_clutter_dataset(radar_sensor: RadarSensor,
                         spawn_region: tuple,
                         speed_range: tuple,
                         rng: np.random.Generator,
+                        filter_cls: type[BayesFilter] = ExtendedKalmanFilter,
                         ) -> tuple[np.ndarray, np.ndarray]:
     """ Generates labeled clutter-classifier training data by running n_scenarios independent
     multi-target scenarios, each with n_targets ground-truth-tracked targets over n_steps frames.
@@ -102,6 +105,7 @@ def build_clutter_dataset(radar_sensor: RadarSensor,
          spawn_region, (x_min, x_max, y_min, y_max) bounds for initial target position;
          speed_range, (speed_min, speed_max) bounds for initial target speed;
          rng, for reproducibility;
+        filter_cls, filter class to construct;
     Out: X (n_detections, N_FEATURES), y (n_detections,) (labels from meta["clutter"])
     """
 
@@ -170,7 +174,7 @@ def build_clutter_dataset(radar_sensor: RadarSensor,
                 if not is_clutter:
                     target_id = det.meta["target_id"]
                     if target_id not in tracks:
-                        tracks[target_id] = init_track_from_detection(det, radar_sensor.radar_model, motion_model, target_id, t*dt)
+                        tracks[target_id] = init_track_from_detection(det, radar_sensor.radar_model, motion_model, target_id, t*dt, filter_cls)
                     else:
                         tracks[target_id].update(det)
     # Convert collected samples into arrays
@@ -254,6 +258,10 @@ def build_cost_matrix_with_classifier(tracks: list[Track], detections: list[Dete
     M = len(tracks)
     N = len(detections)
     cost = np.zeros((M, N), dtype=float)
+
+    # Protect againt empty detections list
+    if N == 0:
+        return cost
 
     features = []
 

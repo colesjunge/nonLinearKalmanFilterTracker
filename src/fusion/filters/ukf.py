@@ -95,15 +95,34 @@ class UnscentedKalmanFilter(KalmanFilter):
 
     def update(self, z) -> None:
         """Update the state with a new measurement z using the Unscented Kalman Filter equations.
-        
+        Uses Generalized Joseph form (with effective H) for P and symmetrizes after as a correction for numerical stability.
+
         In: z (np.ndarray), measurement vector
         Out: None; Mutates self.x, self.P in place
         """
-        y, S = self.innovation(z)
-        _, _, Cxz = self._measurement_prediction()
-        kalman_gain = linalg.solve(S, Cxz.T).T  # K = Cxz * S^-1
 
+        # Calculate innovation and innovation covariance
+        y, S = self.innovation(z)
+
+        # Calculate state-measurement cross covariance
+        _, _, Cxz = self._measurement_prediction()
+
+        # Kalman gain: K = Cxz @ S^-1
+        kalman_gain = linalg.solve(S, Cxz.T).T
+
+        # Update state
         self.x = self.x + kalman_gain @ y
-        self.P = self.P - kalman_gain @ S @ kalman_gain.T
+
+        # Effective measurement Jacobian (Cxz = P @ H_eff.T)
+        H_eff = linalg.solve(self.P, Cxz).T
+
+        # Generalized Joseph form
+        I_KH = np.eye(self.motion.dim_x) - kalman_gain @ H_eff
+
+        R = self.measurement.R()
+
+        self.P = (I_KH @ self.P @ I_KH.T + kalman_gain @ R @ kalman_gain.T)
+
+        # Correct roundoff asymmetry
         self.P = (self.P + self.P.T) / 2
 

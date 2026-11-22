@@ -7,6 +7,8 @@ from tracking.tracker.track import Track
 from tracking.association.assignment import hungarian_assign
 from tracking.association.gating import chi2_gate_threshold, build_cost_matrix
 from fusion.learned.clutter import build_cost_matrix_with_classifier, compute_features, init_track_from_detection
+from tracking.filters.base import BayesFilter
+from fusion.filters.ekf import ExtendedKalmanFilter
 
 # MultiTargetTracker pasted below as placeholder
 class MultiTargetTrackerClutter():
@@ -15,7 +17,7 @@ class MultiTargetTrackerClutter():
     """
 
   
-    def __init__(self, motion_model: MotionModel, radar_model: RadarRangeBearing, classifier=None, n_active_features: int = 0, n_confirm: int = 3, max_misses: int = 5, gate_confidence: float = .99, birth_threshold: float = 0.5):
+    def __init__(self, motion_model: MotionModel, radar_model: RadarRangeBearing, classifier=None, n_active_features: int = 0, n_confirm: int = 3, max_misses: int = 5, gate_confidence: float = .99, birth_threshold: float = 0.5, filter_cls: type[BayesFilter] = ExtendedKalmanFilter):
 
         self.tracks: dict[int, Track] = {}
         self._next_id: int = 0
@@ -27,6 +29,7 @@ class MultiTargetTrackerClutter():
         self.max_misses = max_misses
         self.gate_confidence = gate_confidence
         self.birth_threshold = birth_threshold
+        self.filter_cls = filter_cls
 
     def step(self, detections: list[Detection], dt: float, timestamp: float) -> FrameResult:
         """
@@ -81,7 +84,7 @@ class MultiTargetTrackerClutter():
                     continue  # classifier is confident this is clutter (no track spawn)
             new_id = self._next_id
             self._next_id += 1
-            track = init_track_from_detection(detections[col], self.radar_model, self.motion, new_id, timestamp)
+            track = init_track_from_detection(detections[col], self.radar_model, self.motion, new_id, timestamp, self.filter_cls)
             self.tracks[new_id] = track
 
         # Delete dead tracks

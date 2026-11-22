@@ -8,6 +8,7 @@ import numpy as np
 from tracking.sim.trajectories import constant_velocity_trajectory
 from fusion.models.radar import RadarRangeBearing
 from fusion.sim.noise import contaminated_gaussian_noise
+from fusion.learned.datasets import extract_windows
 
 # This file generates constant velocity datasets with the radarRangeBearing model with contaminated noise
 
@@ -24,23 +25,6 @@ window = config['dataset']['window']
 
 rng = np.random.default_rng(seed)
 radar_model = RadarRangeBearing(sigma_range=sigma_range , sigma_bearing=sigma_bearing)
-
-def extract_windows(z_sequence: np.ndarray, positions: np.ndarray, window: int) -> tuple[np.ndarray, np.ndarray]:
-    """ Extracts windows for every valid end index
-    In:  z_sequence (n_measurements, dim_z); positions (n_measurements, dim_pos); window, length of each window
-    Out: windows (n_windows, window, dim_z); targets (n_windows, dim_pos)
-    """
-
-    n_measurements = len(z_sequence)
-
-    windows = []
-    targets = []
-
-    for t in range(window - 1, n_measurements):
-        windows.append(z_sequence[t - window + 1 : t + 1])
-        targets.append(positions[t])
-
-    return np.array(windows), np.array(targets)
 
 # For all randomly generated trajectories collect windows and targets
 all_windows = []
