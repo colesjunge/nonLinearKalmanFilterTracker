@@ -6,7 +6,6 @@ __pycache__/
 .pytest_cache/
 
 # Project-specific
-figures/
 data/
 *.pt
 *.ckpt
