@@ -14,10 +14,6 @@ data/
 CLAUDE.md
 defense_tracking_projects.md
 
-# README/results are a mess of notes/graphs and will be added once finalized
-README.md
-RESULTS.md
-
 # Experiment tracking (if ever used)
 runs/
 wandb/
